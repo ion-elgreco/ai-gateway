@@ -1,0 +1,20 @@
+# Copyright Envoy AI Gateway Authors
+# SPDX-License-Identifier: Apache-2.0
+# The full text of the Apache license is available in the LICENSE file at
+# the root of the repo.
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ default (include "ai-gateway.name" .) .Values.gateway.name }}
+  namespace: {{ include "ai-gateway.namespace" . }}
+  labels:
+{{ include "ai-gateway.labels" $ | indent 4 }}
+spec:
+  gatewayClassName: {{ .Values.gateway.gatewayClassName | default .Values.global.gatewayClassName | default (include "ai-gateway.name" .)  }}
+  listeners:
+{{- range .Values.gateway.listeners }}
+    - name: {{ .name }}
+      protocol: {{ .protocol }}
+      port: {{ .port }}
+{{- end }}

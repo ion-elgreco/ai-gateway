@@ -1,0 +1,31 @@
+# Copyright Envoy AI Gateway Authors
+# SPDX-License-Identifier: Apache-2.0
+# The full text of the Apache license is available in the LICENSE file at
+# the root of the repo.
+
+{{- range .Values.aiServiceBackends }}
+apiVersion: aigateway.envoyproxy.io/v1alpha1
+kind: AIServiceBackend
+metadata:
+  name: {{ .name }}
+  namespace: {{ include "ai-gateway.namespace" $ }}
+  labels:
+{{ include "ai-gateway.labels" $ | indent 4 }}
+spec:
+  schema:
+    name: {{ .schemaName }}
+    {{- if .version }}
+    version: {{ .version }}
+    {{- end }}
+  backendRef:
+    name: {{ .backendRef }}
+    kind: Backend
+    group: gateway.envoyproxy.io
+  {{- if .securityPolicy }}
+  backendSecurityPolicyRef:
+    name: {{ .securityPolicy.secretName }}
+    kind: BackendSecurityPolicy
+    group: aigateway.envoyproxy.io
+  {{- end }}
+---
+{{- end }}

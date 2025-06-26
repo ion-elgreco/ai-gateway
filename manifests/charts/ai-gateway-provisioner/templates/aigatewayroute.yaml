@@ -1,0 +1,29 @@
+# Copyright Envoy AI Gateway Authors
+# SPDX-License-Identifier: Apache-2.0
+# The full text of the Apache license is available in the LICENSE file at
+# the root of the repo.
+
+apiVersion: aigateway.envoyproxy.io/v1alpha1
+kind: AIGatewayRoute
+metadata:
+  name: {{ .Values.route.name | default (include "ai-gateway.name" $) }}
+  namespace: {{ include "ai-gateway.namespace" . }}
+  labels:
+{{ include "ai-gateway.labels" $ | indent 4 }}
+spec:
+  schema:
+    name: {{ .Values.route.schemaName }}
+  targetRefs:
+    - name: {{ .Values.route.gatewayName | default .Values.gateway.name | default (include "ai-gateway.name" .) }}
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  rules:
+{{- range .Values.route.rules }}
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: {{ .model }}
+      backendRefs:
+{{ toYaml .backendRefs | indent 8 }}
+{{- end }}

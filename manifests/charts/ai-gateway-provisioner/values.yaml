@@ -1,0 +1,73 @@
+# You can override the global "name" for all objects
+global:
+  fullnameOverride: ""
+  gatewayClassName: envoy-ai-gateway-basic
+
+# Envoy Gateway Class
+gatewayClass:
+  enabled: true
+  # defaults to release name if empty
+  name: ""
+
+# Enoy Gateway
+gateway:
+  # defaults to release name if empty
+  name: ""
+  # defaults to gatewayClass.name
+  gatewayClassName: ""
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+
+# Envoy Backends (endpoints)
+backends: []
+  # - name: envoy-ai-gateway-backend-openai
+  #   endpoints:
+  #     - host: api.openai.com
+  #       port: 443
+
+# Envoy AI Gateway Service Backends + its security policy
+aiServiceBackends: []
+  # - name: envoy-ai-gateway-basic-openai
+  #   schemaName: OpenAI
+  #   backendRef: envoy-ai-gateway-backend-openai
+  #   securityPolicy:
+  #     type: APIKey
+  #     # The key of the secret should be apiKey.
+  #     secretName: envoy-ai-gateway-basic-openai-apikey
+
+  # - name: envoy-ai-gateway-basic-aws
+  #   schemaName: AWSBedrock
+  #   backendRef: envoy-ai-gateway-backend-aws
+  #   securityPolicy:
+  #     type: AWSCredentials
+  #     secretName: envoy-ai-gateway-basic-aws-credentials
+  #     region: us-east-1
+
+  # - name: envoy-ai-gateway-basic-azure
+  #   schemaName: AzureOpenAI
+  #   version: 2025-01-01-preview
+  #   backendRef: envoy-ai-gateway-backend-azure
+  #   securityPolicy:
+  #     type: AzureCredentials
+  #     secretName: envoy-ai-gateway-basic-azure-client-secret
+  #     clientID: AZURE_CLIENT_ID
+  #     tenantID: AZURE_TENANT_ID
+
+# Envoy AI Gateway Route, referencing Envoy AI Gateway Service backends
+route:
+  # defaults to release name if empty
+  gatewayName: ""
+  schemaName: OpenAI
+  rules: []
+    # # each element = one rule in the CRD
+    # - model: gpt-4o-mini
+    #   backendRefs:
+    #     - envoy-ai-gateway-basic-openai
+
+# Envoy AI Gateway TLS Backend policies
+backendTLSPolicies: []
+  # - name: envoy-ai-gateway-basic-openai-tls
+  #   backendRef: envoy-ai-gateway-basic-openai
+  #   hostname: api.openai.com

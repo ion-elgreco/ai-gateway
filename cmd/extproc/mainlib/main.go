@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
 
 	"github.com/envoyproxy/ai-gateway/filterapi/x"
 	"github.com/envoyproxy/ai-gateway/internal/extproc"
@@ -105,6 +106,11 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		return fmt.Errorf("failed to parse and validate extProcFlags: %w", err)
 	}
 
+	// Initialize OpenTelemetry tracing.
+	if traceErr := extproc.InitTracing(ctx); traceErr != nil {
+		return fmt.Errorf("failed to initialize OpenTelemetry tracing: %w", traceErr)
+	}
+
 	l := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: flags.logLevel}))
 
 	l.Info("starting external processor",
@@ -145,6 +151,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	s := grpc.NewServer()
 	extprocv3.RegisterExternalProcessorServer(s, server)
 	grpc_health_v1.RegisterHealthServer(s, server)
+	reflection.Register(s)
 
 	hs := startHealthCheckServer(fmt.Sprintf(":%d", flags.healthPort), l, lis)
 	go func() {

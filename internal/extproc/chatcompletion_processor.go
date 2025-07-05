@@ -17,6 +17,9 @@ import (
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3http "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/envoyproxy/ai-gateway/filterapi"
@@ -97,10 +100,27 @@ func (c *chatCompletionProcessorRouterFilter) ProcessResponseBody(ctx context.Co
 }
 
 // ProcessRequestBody implements [Processor.ProcessRequestBody].
-func (c *chatCompletionProcessorRouterFilter) ProcessRequestBody(_ context.Context, rawBody *extprocv3.HttpBody) (*extprocv3.ProcessingResponse, error) {
+func (c *chatCompletionProcessorRouterFilter) ProcessRequestBody(ctx context.Context, rawBody *extprocv3.HttpBody) (*extprocv3.ProcessingResponse, error) {
+	// --- OpenTelemetry (OpenInference enrichment) ---
+	// Extract active span from context, if any
+	span := oteltrace.SpanFromContext(ctx)
+	// ------------------------------------------------
+
 	model, body, err := parseOpenAIChatCompletionBody(rawBody)
 	if err != nil {
+		if span != nil {
+			span.RecordError(err)
+			span.SetStatus(otelcodes.Error, err.Error())
+		}
 		return nil, fmt.Errorf("failed to parse request body: %w", err)
+	}
+
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("input.value", string(rawBody.Body)),
+			attribute.String("input.mime_type", "application/json"),
+			attribute.String("model", model),
+		)
 	}
 
 	c.requestHeaders[c.config.modelNameHeaderKey] = model
@@ -261,6 +281,23 @@ func (c *chatCompletionProcessorUpstreamFilter) ProcessResponseHeaders(ctx conte
 func (c *chatCompletionProcessorUpstreamFilter) ProcessResponseBody(ctx context.Context, body *extprocv3.HttpBody) (res *extprocv3.ProcessingResponse, err error) {
 	defer func() {
 		c.metrics.RecordRequestCompletion(ctx, err == nil)
+		// --- OTel - set output.value and status on span ---
+		span := oteltrace.SpanFromContext(ctx)
+		if span != nil {
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(otelcodes.Error, err.Error())
+			} else if res != nil && res.Response != nil {
+				if br, ok := res.Response.(*extprocv3.ProcessingResponse_ResponseBody); ok {
+					bd := br.ResponseBody.GetResponse().GetBodyMutation().GetBody()
+					span.SetAttributes(
+						attribute.String("output.value", string(bd)),
+						attribute.String("output.mime_type", "application/json"),
+					)
+				}
+				span.SetStatus(otelcodes.Ok, "OK")
+			}
+		}
 	}()
 	var br io.Reader
 	var isGzip bool

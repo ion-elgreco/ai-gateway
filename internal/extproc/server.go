@@ -19,6 +19,9 @@ import (
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/google/cel-go/cel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
@@ -170,15 +173,31 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			reqID = headersMap["x-request-id"]
 			// Assume that when attributes are set, this stream is for the upstream filter level.
 			isUpstreamFilter = req.GetAttributes() != nil
+
+			// ---- Begin OpenTelemetry: Start root span for request ----
+			spanName := "query"
+			spanKind := "CHAIN"
+			ctx, span := extprocTracer.Start(ctx, spanName, oteltrace.WithAttributes(
+				attribute.String("openinference.span.kind", spanKind),
+				attribute.String("request_id", reqID),
+				attribute.String("path", headersMap[":path"]),
+			))
+			defer span.End()
+			// ---- End OpenTelemetry ----
+
 			p, err = s.processorForPath(headersMap, isUpstreamFilter)
 			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(otelcodes.Error, err.Error())
 				s.logger.Error("cannot get processor", slog.String("error", err.Error()))
-				return status.Error(codes.NotFound, err.Error())
+				return status.Error(status.Code(err), err.Error())
 			}
 			if isUpstreamFilter {
 				if err = s.setBackend(ctx, p, reqID, req); err != nil {
+					span.RecordError(err)
+					span.SetStatus(otelcodes.Error, err.Error())
 					s.logger.Error("error processing request message", slog.String("error", err.Error()))
-					return status.Errorf(codes.Unknown, "error processing request message: %v", err)
+					return status.Errorf(status.Code(err), "error processing request message: %v", err)
 				}
 			} else {
 				s.routerProcessorsPerReqIDMutex.Lock()

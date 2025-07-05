@@ -9,6 +9,9 @@ import (
 	"context"
 	"log/slog"
 
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/google/cel-go/cel"
@@ -28,6 +31,11 @@ type processorConfig struct {
 	declaredModels     []filterapi.Model
 	backends           map[string]*processorConfigBackend
 }
+
+var extprocTracer oteltrace.Tracer = otel.Tracer("ai-gateway/extproc")
+
+// Utility for getting the active span from the context (OpenTelemetry-go).
+// Usage: span := trace.SpanFromContext(ctx)
 
 type processorConfigBackend struct {
 	b       *filterapi.Backend

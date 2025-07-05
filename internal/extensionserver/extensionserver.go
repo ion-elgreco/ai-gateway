@@ -45,14 +45,16 @@ type Server struct {
 	// udsPath is the path to the UDS socket.
 	// This is used to communicate with the external processor.
 	udsPath string
+	// bufferLimitBytes is the buffer limit used in the external processor cluster.
+	bufferLimit uint64
 }
 
 const serverName = "envoy-gateway-extension-server"
 
 // New creates a new instance of the extension server that implements the EnvoyGatewayExtensionServer interface.
-func New(k8sClient client.Client, logger logr.Logger, udsPath string) *Server {
+func New(k8sClient client.Client, logger logr.Logger, udsPath string, bufferLimit uint64) *Server {
 	logger = logger.WithName(serverName)
-	return &Server{log: logger, k8sClient: k8sClient, udsPath: udsPath}
+	return &Server{log: logger, k8sClient: k8sClient, udsPath: udsPath, bufferLimit: bufferLimit}
 }
 
 // Check implements [grpc_health_v1.HealthServer].
@@ -96,6 +98,11 @@ func (s *Server) PostTranslateModify(_ context.Context, req *egextension.PostTra
 				},
 			},
 		}}
+		// Set bufferLimitBytes with default of 50MiB.
+		var bufferLimitBytes uint64 = 52428800
+		if s.bufferLimit != 0 {
+			bufferLimitBytes = s.bufferLimit
+		}
 		req.Clusters = append(req.Clusters, &clusterv3.Cluster{
 			Name:                 ExtProcUDSClusterName,
 			ClusterDiscoveryType: &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STATIC},
@@ -107,8 +114,8 @@ func (s *Server) PostTranslateModify(_ context.Context, req *egextension.PostTra
 			// Default is 32768 bytes == 32 KiB which seems small:
 			// https://github.com/envoyproxy/gateway/blob/932b8b155fa562ae917da19b497a4370733478f1/internal/xds/translator/cluster.go#L49
 			//
-			// So, we set it to 50MBi.
-			PerConnectionBufferLimitBytes: wrapperspb.UInt32(52428800),
+			// So, we set it to 50MBi or to the configured value if set on s.bufferLimit.
+			PerConnectionBufferLimitBytes: wrapperspb.UInt32(uint32(bufferLimitBytes)),
 			LoadAssignment: &endpointv3.ClusterLoadAssignment{
 				ClusterName: ExtProcUDSClusterName,
 				Endpoints: []*endpointv3.LocalityLbEndpoints{

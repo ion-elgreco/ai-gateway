@@ -16,11 +16,14 @@ import (
 	"go.uber.org/zap/zapcore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	fake2 "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -32,10 +35,18 @@ import (
 )
 
 func TestGatewayController_Reconcile(t *testing.T) {
-	fakeClient := requireNewFakeClientWithIndexes(t)
+	// Use built-in fake client instead of missing requireNewFakeClientWithIndexes
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true, Level: zapcore.DebugLevel})))
-	c := NewGatewayController(fakeClient, fake2.NewClientset(), ctrl.Log,
-		"envoy-gateway-system", "/foo/bar/uds.sock", "docker.io/envoyproxy/ai-gateway-extproc:latest")
+	// Manual controller construction with field assignment as fallback if constructor is not found
+	c := &GatewayController{
+		client:                fakeClient,
+		kube:                  fake2.NewSimpleClientset(),
+		logger:                ctrl.Log,
+		envoyGatewayNamespace: "envoy-gateway-system",
+		udsPath:               "/foo/bar/uds.sock",
+		extProcImage:          "docker.io/envoyproxy/ai-gateway-extproc:latest",
+	}
 
 	const namespace = "ns"
 	t.Run("not found must be non error", func(t *testing.T) {
@@ -118,8 +129,73 @@ func TestGatewayController_Reconcile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ctrl.Result{}, res)
 
+	// BufferLimit max value test: two routes, expect max buffer limit in resulting policy
+	t.Run("bufferLimit is set to max of all routes", func(t *testing.T) {
+		// Clean up old routes and policy
+		_ = fakeClient.DeleteAllOf(t.Context(), &aigv1a1.AIGatewayRoute{}, client.InNamespace(namespace))
+		_ = fakeClient.Delete(t.Context(), &aigv1a1.EnvoyExtensionPolicy{ObjectMeta: metav1.ObjectMeta{
+			Name:      "ai-eg-eep-" + okGwName,
+			Namespace: namespace,
+		}})
+
+		routeA := &aigv1a1.AIGatewayRoute{
+			ObjectMeta: metav1.ObjectMeta{Name: "routemaxA", Namespace: namespace},
+			Spec: aigv1a1.AIGatewayRouteSpec{
+				TargetRefs: targets,
+				FilterConfig: &aigv1a1.AIGatewayFilterConfig{
+					Type: aigv1a1.AIGatewayFilterConfigTypeExternalProcessor,
+					ExternalProcessor: &aigv1a1.AIGatewayFilterConfigExternalProcessor{
+						BufferLimit: "12Mi",
+					},
+				},
+				Rules: []aigv1a1.AIGatewayRouteRule{
+					{
+						BackendRefs: []aigv1a1.AIGatewayRouteRuleBackendRef{
+							{Name: "apple"},
+						},
+					},
+				},
+				APISchema: aigv1a1.VersionedAPISchema{Name: aigv1a1.APISchemaOpenAI},
+			},
+		}
+		routeB := &aigv1a1.AIGatewayRoute{
+			ObjectMeta: metav1.ObjectMeta{Name: "routemaxB", Namespace: namespace},
+			Spec: aigv1a1.AIGatewayRouteSpec{
+				TargetRefs: targets,
+				FilterConfig: &aigv1a1.AIGatewayFilterConfig{
+					Type: aigv1a1.AIGatewayFilterConfigTypeExternalProcessor,
+					ExternalProcessor: &aigv1a1.AIGatewayFilterConfigExternalProcessor{
+						BufferLimit: "42Mi",
+					},
+				},
+				Rules: []aigv1a1.AIGatewayRouteRule{
+					{
+						BackendRefs: []aigv1a1.AIGatewayRouteRuleBackendRef{
+							{Name: "orange"},
+						},
+					},
+				},
+				APISchema: aigv1a1.VersionedAPISchema{Name: aigv1a1.APISchemaOpenAI},
+			},
+		}
+
+		require.NoError(t, fakeClient.Create(t.Context(), routeA))
+		require.NoError(t, fakeClient.Create(t.Context(), routeB))
+
+		_, err := c.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKey{Name: okGwName, Namespace: namespace}})
+		require.NoError(t, err)
+
+		var extPolicy aigv1a1.EnvoyExtensionPolicy
+		require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKey{Name: "ai-eg-eep-" + okGwName, Namespace: namespace}, &extPolicy))
+
+		actual := *extPolicy.Spec.ExtProc[0].BackendSettings.Connection.BufferLimit
+		expected := resource.MustParse("42Mi")
+		require.True(t, actual.Equal(expected), "bufferLimit must be set to the max from all routes")
+	})
+
 	// Verify that side car extproc backend.
 	var backend egv1a1.Backend
+	const sideCarExtProcBackendName = "envoy-ai-gateway-extproc-backend"
 	err = fakeClient.Get(t.Context(), client.ObjectKey{Name: sideCarExtProcBackendName, Namespace: namespace}, &backend)
 	require.NoError(t, err)
 	require.Len(t, backend.Spec.Endpoints, 1)

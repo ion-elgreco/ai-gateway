@@ -355,4 +355,13 @@ type AIGatewayFilterConfigExternalProcessor struct {
 	//
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// BufferLimit is the soft limit on size of the external processor cluster's connections read and write buffers.
+	// This corresponds to the PerConnectionBufferLimitBytes of the Envoy cluster.
+	// It is represented as a Kubernetes resource.Quantity string, e.g. "50Mi".
+	//
+	// If unset, defaults to "50Mi".
+	//
+	// +optional
+	BufferLimit string `json:"bufferLimit,omitempty"`
 }

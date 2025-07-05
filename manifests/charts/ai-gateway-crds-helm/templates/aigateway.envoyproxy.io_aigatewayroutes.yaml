@@ -152,6 +152,12 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      bufferLimit:
+                        description: |-
+                          BufferLimit is the soft limit on size of the external processor cluster's connections read and write buffers.
+                          This corresponds to the PerConnectionBufferLimitBytes of the Envoy cluster.
+                          It is represented as a Kubernetes resource.Quantity string, e.g. "50Mi".
+                        type: string
                     type: object
                   type:
                     default: ExternalProcessor

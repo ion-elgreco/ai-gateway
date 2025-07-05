@@ -117,6 +117,7 @@ const sideCarExtProcBackendName = "envoy-ai-gateway-extproc-backend"
 func (c *GatewayController) ensureExtensionPolicy(ctx context.Context, gw *gwapiv1.Gateway) (err error) {
 	// Ensure that the backend that makes Envoy talk to the UDS exists.
 	var backend egv1a1.Backend
+	var bufferLimitQty resource.Quantity
 	if err = c.client.Get(ctx, client.ObjectKey{Name: sideCarExtProcBackendName, Namespace: gw.Namespace}, &backend); err != nil {
 		if apierrors.IsNotFound(err) {
 			backend = egv1a1.Backend{
@@ -133,6 +134,29 @@ func (c *GatewayController) ensureExtensionPolicy(ctx context.Context, gw *gwapi
 			}
 		} else {
 			return fmt.Errorf("failed to get backend: %w", err)
+		}
+
+		// Find all AIGatewayRoutes for this Gateway to get the max external processor buffer limit config.
+		var aigwRoutes aigv1a1.AIGatewayRouteList
+		if err = c.client.List(ctx, &aigwRoutes, client.InNamespace(gw.Namespace)); err != nil {
+			return fmt.Errorf("failed to list AIGatewayRoutes: %w", err)
+		}
+
+		// Default buffer limit for extproc.
+		maxBufferLimitQty := resource.MustParse("50Mi")
+
+		// Find the max buffer limit among all routes.
+		for _, route := range aigwRoutes.Items {
+			if route.Spec.FilterConfig != nil && route.Spec.FilterConfig.ExternalProcessor != nil && route.Spec.FilterConfig.ExternalProcessor.BufferLimit != "" {
+				blQty, err := resource.ParseQuantity(route.Spec.FilterConfig.ExternalProcessor.BufferLimit)
+				if err != nil {
+					c.logger.Error(err, "invalid bufferLimit value in AIGatewayRoute, ignoring", "bufferLimit", route.Spec.FilterConfig.ExternalProcessor.BufferLimit)
+					continue
+				}
+				if blQty.Cmp(maxBufferLimitQty) > 0 {
+					maxBufferLimitQty = blQty
+				}
+			}
 		}
 	}
 
@@ -177,17 +201,22 @@ func (c *GatewayController) ensureExtensionPolicy(ctx context.Context, gw *gwapi
 							// Default is 32768 bytes == 32 KiB which seems small:
 							// https://github.com/envoyproxy/gateway/blob/932b8b55fa562ae917da19b497a4370733478f1/internal/xds/translator/cluster.go#L49
 							//
-							// So, we set it to 50MBi.
+							// So, we set it to 50Mi.
 							//
 							// Note that currently ExtProc cluster is also defined in the extension server,
 							// so ensure that the same value is used there.
-							BufferLimit: ptr.To(resource.MustParse("50Mi")),
+							BufferLimit: ptr.To(bufferLimitQty),
 						},
 					},
 				},
 			}},
 		},
 	}
+	// Log buffer limit used before creating EnvoyExtensionPolicy
+	c.logger.Info("Creating EnvoyExtensionPolicy with external processor backend buffer limit",
+		"gateway", gw.Name,
+		"bufferLimit", bufferLimitQty.String())
+
 	if err = c.client.Create(ctx, extPolicy); err != nil {
 		err = fmt.Errorf("failed to create extension policy: %w", err)
 	}

@@ -146,7 +146,7 @@ The following table summarizes which providers support which endpoints:
 |-------------------------------------------------------------------------------------------------------|:----------------:|:----------:|----------------------------------------------------|
 | [OpenAI](https://platform.openai.com/docs/api-reference)                                              |        ✅         |     ✅      |                                                    |
 | [AWS Bedrock](https://docs.aws.amazon.com/bedrock/latest/APIReference/)                               |        ✅         |     🚧     | Via API translation                                |
-| [Azure OpenAI](https://learn.microsoft.com/en-us/azure/ai-services/openai/reference)                  |        ✅         |     🚧     | Via API translation                                |
+| [Azure OpenAI](https://learn.microsoft.com/en-us/azure/ai-services/openai/reference)                  |        ✅         |     ✅     | Via API translation or via [OpenAI-compatible API](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/latest) using this AIServiceBackend spec <br><code>spec:</br>&nbsp;&nbsp;schema:<br>&nbsp;&nbsp;&nbsp;&nbsp;name: OpenAI</br>&nbsp;&nbsp;&nbsp;&nbsp;version: openai/v1</code> |
 | [Google Gemini](https://ai.google.dev/gemini-api/docs/openai)                                         |        ✅         |     ✅      | Via OpenAI-compatible API                          |
 | [Groq](https://console.groq.com/docs/openai)                                                          |        ✅         |     ❌      | Via OpenAI-compatible API                          |
 | [Grok](https://docs.x.ai/docs/api-reference)                                                          |        ✅         |     ❌      | Via OpenAI-compatible API                          |
@@ -158,7 +158,7 @@ The following table summarizes which providers support which endpoints:
 | [Hunyuan](https://cloud.tencent.com/document/product/1729/111007)                                     |        ⚠️        |     ⚠️     | Via OpenAI-compatible API                          |
 | [Tencent LLM Knowledge Engine](https://www.tencentcloud.com/document/product/1255/70381)              |        ⚠️        |     ❌      | Via OpenAI-compatible API                          |
 | [Tetrate Agent Router Service (TARS)](https://router.tetrate.ai/)              |         ⚠️         |      ⚠️      | Via OpenAI-compatible API                          |
-| [Google Vertex AI](https://cloud.google.com/vertex-ai/docs/reference/rest)                            |        ✅         |     🚧     | Via OpenAI-compatible API                          |
+| [Google Vertex AI](https://cloud.google.com/vertex-ai/docs/reference/rest)                            |        ✅         |     🚧     | Via OpenAI-compatible API (Chat completions only)  |
 | [Anthropic on Vertex AI](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude) |        ✅         |     🚧     | Via OpenAI-compatible API and Native Anthropic API |
 | [SambaNova](https://docs.sambanova.ai/sambastudio/latest/open-ai-api.html)                            |        ✅         |     ✅      | Via OpenAI-compatible API                          |                                                                                                                                                        |
 * ✅ - Supported and Tested on Envoy AI Gateway CI

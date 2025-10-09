@@ -11,6 +11,7 @@ import (
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"github.com/tidwall/sjson"
 
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
@@ -43,6 +44,10 @@ func (o *openAIToAzureOpenAITranslatorV1Embedding) RequestBody(original []byte, 
 	modelName := req.Model
 	if o.modelNameOverride != "" {
 		// If modelName is set we override the model to be used for the request.
+		newBody, err = sjson.SetBytesOptions(original, "model", o.modelNameOverride, SJSONOptions)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to set model name: %w", err)
+		}
 		modelName = o.modelNameOverride
 	}
 

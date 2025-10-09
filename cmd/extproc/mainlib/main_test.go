@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,7 +86,41 @@ func Test_parseAndValidateFlags(t *testing.T) {
 				name: "with header mapping",
 				args: []string{
 					"-configPath", "/path/to/config.yaml",
-					"-metricsRequestHeaderLabels", "x-team-id:team_id,x-user-id:user_id",
+					"-metricsRequestHeaderAttributes", "x-team-id:team.id,x-user-id:user.id",
+				},
+				configPath: "/path/to/config.yaml",
+				rootPrefix: "/",
+				addr:       ":1063",
+				logLevel:   slog.LevelInfo,
+			},
+			{
+				name: "with tracing header attributes",
+				args: []string{
+					"-configPath", "/path/to/config.yaml",
+					"-spanRequestHeaderAttributes", "x-session-id:session.id,x-user-id:user.id",
+				},
+				configPath: "/path/to/config.yaml",
+				rootPrefix: "/",
+				addr:       ":1063",
+				logLevel:   slog.LevelInfo,
+			},
+			{
+				name: "with both metrics and tracing headers",
+				args: []string{
+					"-configPath", "/path/to/config.yaml",
+					"-metricsRequestHeaderAttributes", "x-user-id:user.id",
+					"-spanRequestHeaderAttributes", "x-session-id:session.id",
+				},
+				configPath: "/path/to/config.yaml",
+				rootPrefix: "/",
+				addr:       ":1063",
+				logLevel:   slog.LevelInfo,
+			},
+			{
+				name: "with deprecated metricsRequestHeaderLabels flag",
+				args: []string{
+					"-configPath", "/path/to/config.yaml",
+					"-metricsRequestHeaderLabels", "x-team-id:team.id",
 				},
 				configPath: "/path/to/config.yaml",
 				rootPrefix: "/",
@@ -105,9 +140,34 @@ func Test_parseAndValidateFlags(t *testing.T) {
 	})
 
 	t.Run("invalid extProcFlags", func(t *testing.T) {
-		_, err := parseAndValidateFlags([]string{"-logLevel", "invalid"})
-		require.EqualError(t, err, `configPath must be provided
-failed to unmarshal log level: slog: level string "invalid": unknown name`)
+		tests := []struct {
+			name          string
+			args          []string
+			expectedError string
+		}{
+			{
+				name:          "invalid log level",
+				args:          []string{"-logLevel", "invalid"},
+				expectedError: "configPath must be provided\nfailed to unmarshal log level: slog: level string \"invalid\": unknown name",
+			},
+			{
+				name:          "invalid tracing header attributes - missing colon",
+				args:          []string{"-configPath", "/path/to/config.yaml", "-spanRequestHeaderAttributes", "x-session-id"},
+				expectedError: "failed to parse tracing header mapping: invalid header-attribute pair at position 1: \"x-session-id\" (expected format: header:attribute)",
+			},
+			{
+				name:          "invalid tracing header attributes - empty header",
+				args:          []string{"-configPath", "/path/to/config.yaml", "-spanRequestHeaderAttributes", ":session.id"},
+				expectedError: "failed to parse tracing header mapping: empty header or attribute at position 1: \":session.id\"",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := parseAndValidateFlags(tt.args)
+				require.EqualError(t, err, tt.expectedError)
+			})
+		}
 	})
 }
 
@@ -145,8 +205,7 @@ func TestExtProcStartupMessage(t *testing.T) {
 	// Create a temporary config file.
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte(`metadataNamespace: test_ns
-modelNameHeaderKey: x-model-name
+	require.NoError(t, os.WriteFile(configPath, []byte(`
 backends:
 - name: openai
   schema:
@@ -171,6 +230,12 @@ backends:
 		}
 	}()
 
+	// UNIX doesn't like the long socket paths, so create a temp directory for the socket instead of t.TempDir.
+	socketTempDir := "/tmp/" + uuid.NewString()
+	t.Cleanup(func() { _ = os.RemoveAll(socketTempDir) })
+	require.NoError(t, os.MkdirAll(socketTempDir, 0o700))
+	socketPath := filepath.Join(socketTempDir, "mcp.sock")
+
 	// Run ExtProc in a goroutine on ephemeral ports.
 	errCh := make(chan error, 1)
 	go func() {
@@ -178,6 +243,7 @@ backends:
 			"-configPath", configPath,
 			"-extProcAddr", ":0",
 			"-adminPort", "0",
+			"-mcpAddr", "unix://" + socketPath,
 		}
 		errCh <- Main(ctx, args, stderrW)
 	}()

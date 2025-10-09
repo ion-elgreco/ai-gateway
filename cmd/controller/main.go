@@ -32,21 +32,25 @@ import (
 )
 
 type flags struct {
-	extProcLogLevel            string
-	extProcImage               string
-	extProcImagePullPolicy     corev1.PullPolicy
-	enableLeaderElection       bool
-	logLevel                   zapcore.Level
-	extensionServerPort        string
-	tlsCertDir                 string
-	tlsCertName                string
-	tlsKeyName                 string
-	caBundleName               string
-	metricsRequestHeaderLabels string
-	rootPrefix                 string
-	extProcExtraEnvVars        string
+	extProcLogLevel                string
+	extProcImage                   string
+	extProcImagePullPolicy         corev1.PullPolicy
+	enableLeaderElection           bool
+	logLevel                       zapcore.Level
+	extensionServerPort            string
+	tlsCertDir                     string
+	tlsCertName                    string
+	tlsKeyName                     string
+	caBundleName                   string
+	metricsRequestHeaderAttributes string
+	metricsRequestHeaderLabels     string // DEPRECATED: use metricsRequestHeaderAttributes instead.
+	spanRequestHeaderAttributes    string
+	rootPrefix                     string
+	extProcExtraEnvVars            string
 	// extProcMaxRecvMsgSize is the maximum message size in bytes that the gRPC server can receive.
 	extProcMaxRecvMsgSize int
+	// maxRecvMsgSize is the maximum message size in bytes that the gRPC extension server can receive.
+	maxRecvMsgSize int
 }
 
 // parsePullPolicy parses string into a k8s PullPolicy.
@@ -114,10 +118,20 @@ func parseAndValidateFlags(args []string) (flags, error) {
 		"tls.key",
 		"The name of the TLS key file.",
 	)
+	metricsRequestHeaderAttributes := fs.String(
+		"metricsRequestHeaderAttributes",
+		"",
+		"Comma-separated key-value pairs for mapping HTTP request headers to Otel metric attributes. Format: x-team-id:team.id,x-user-id:user.id.",
+	)
 	metricsRequestHeaderLabels := fs.String(
 		"metricsRequestHeaderLabels",
 		"",
-		"Comma-separated key-value pairs for mapping HTTP request headers to Prometheus metric labels. Format: x-team-id:team_id,x-user-id:user_id.",
+		"DEPRECATED: Use --metricsRequestHeaderAttributes instead. This flag will be removed in a future release.",
+	)
+	spanRequestHeaderAttributes := fs.String(
+		"spanRequestHeaderAttributes",
+		"",
+		"Comma-separated key-value pairs for mapping HTTP request headers to otel span attributes. Format: x-session-id:session.id,x-user-id:user.id.",
 	)
 	rootPrefix := fs.String(
 		"rootPrefix",
@@ -134,10 +148,20 @@ func parseAndValidateFlags(args []string) (flags, error) {
 		512*1024*1024,
 		"Maximum message size in bytes that the gRPC server can receive for extProc. Default is 512MB.",
 	)
+	maxRecvMsgSize := fs.Int(
+		"maxRecvMsgSize",
+		4*1024*1024,
+		"Maximum message size in bytes that the gRPC extension server can receive. Default is 4MB.",
+	)
 
 	if err := fs.Parse(args); err != nil {
 		err = fmt.Errorf("failed to parse flags: %w", err)
 		return flags{}, err
+	}
+
+	// Handle deprecated flag: fall back to metricsRequestHeaderLabels if metricsRequestHeaderAttributes is not set.
+	if *metricsRequestHeaderAttributes == "" && *metricsRequestHeaderLabels != "" {
+		*metricsRequestHeaderAttributes = *metricsRequestHeaderLabels
 	}
 
 	var slogLevel slog.Level
@@ -157,11 +181,19 @@ func parseAndValidateFlags(args []string) (flags, error) {
 		return flags{}, err
 	}
 
-	// Validate metrics header labels if provided.
-	if *metricsRequestHeaderLabels != "" {
-		_, err := internalapi.ParseRequestHeaderLabelMapping(*metricsRequestHeaderLabels)
+	// Validate metrics header attributes if provided.
+	if *metricsRequestHeaderAttributes != "" {
+		_, err := internalapi.ParseRequestHeaderAttributeMapping(*metricsRequestHeaderAttributes)
 		if err != nil {
-			return flags{}, fmt.Errorf("invalid metrics header labels: %w", err)
+			return flags{}, fmt.Errorf("invalid metrics header attributes: %w", err)
+		}
+	}
+
+	// Validate tracing header attributes if provided.
+	if *spanRequestHeaderAttributes != "" {
+		_, err := internalapi.ParseRequestHeaderAttributeMapping(*spanRequestHeaderAttributes)
+		if err != nil {
+			return flags{}, fmt.Errorf("invalid tracing header attributes: %w", err)
 		}
 	}
 
@@ -174,20 +206,23 @@ func parseAndValidateFlags(args []string) (flags, error) {
 	}
 
 	return flags{
-		extProcLogLevel:            *extProcLogLevelPtr,
-		extProcImage:               *extProcImagePtr,
-		extProcImagePullPolicy:     extProcPullPolicy,
-		enableLeaderElection:       *enableLeaderElectionPtr,
-		logLevel:                   zapLogLevel,
-		extensionServerPort:        *extensionServerPortPtr,
-		tlsCertDir:                 *tlsCertDir,
-		tlsCertName:                *tlsCertName,
-		tlsKeyName:                 *tlsKeyName,
-		caBundleName:               *caBundleName,
-		metricsRequestHeaderLabels: *metricsRequestHeaderLabels,
-		rootPrefix:                 *rootPrefix,
-		extProcExtraEnvVars:        *extProcExtraEnvVars,
-		extProcMaxRecvMsgSize:      *extProcMaxRecvMsgSize,
+		extProcLogLevel:                *extProcLogLevelPtr,
+		extProcImage:                   *extProcImagePtr,
+		extProcImagePullPolicy:         extProcPullPolicy,
+		enableLeaderElection:           *enableLeaderElectionPtr,
+		logLevel:                       zapLogLevel,
+		extensionServerPort:            *extensionServerPortPtr,
+		tlsCertDir:                     *tlsCertDir,
+		tlsCertName:                    *tlsCertName,
+		tlsKeyName:                     *tlsKeyName,
+		caBundleName:                   *caBundleName,
+		metricsRequestHeaderAttributes: *metricsRequestHeaderAttributes,
+		metricsRequestHeaderLabels:     *metricsRequestHeaderLabels,
+		spanRequestHeaderAttributes:    *spanRequestHeaderAttributes,
+		rootPrefix:                     *rootPrefix,
+		extProcExtraEnvVars:            *extProcExtraEnvVars,
+		extProcMaxRecvMsgSize:          *extProcMaxRecvMsgSize,
+		maxRecvMsgSize:                 *maxRecvMsgSize,
 	}, nil
 }
 
@@ -198,6 +233,11 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "failed to parse and validate flags")
 		os.Exit(1)
+	}
+
+	// Warn if deprecated flag is being used.
+	if flags.metricsRequestHeaderLabels != "" {
+		setupLog.Info("The --metricsRequestHeaderLabels flag is deprecated and will be removed in a future release. Please use --metricsRequestHeaderAttributes instead.")
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true, Level: flags.logLevel})))
@@ -239,7 +279,7 @@ func main() {
 
 	// Start the extension server running alongside the controller.
 	const extProcUDSPath = "/etc/ai-gateway-extproc-uds/run.sock"
-	s := grpc.NewServer()
+	s := grpc.NewServer(grpc.MaxRecvMsgSize(flags.maxRecvMsgSize))
 	extSrv := extensionserver.New(mgr.GetClient(), ctrl.Log, extProcUDSPath, false)
 	egextension.RegisterEnvoyGatewayExtensionServer(s, extSrv)
 	grpc_health_v1.RegisterHealthServer(s, extSrv)
@@ -255,15 +295,16 @@ func main() {
 
 	// Start the controller.
 	if err := controller.StartControllers(ctx, mgr, k8sConfig, ctrl.Log.WithName("controller"), controller.Options{
-		ExtProcImage:               flags.extProcImage,
-		ExtProcImagePullPolicy:     flags.extProcImagePullPolicy,
-		ExtProcLogLevel:            flags.extProcLogLevel,
-		EnableLeaderElection:       flags.enableLeaderElection,
-		UDSPath:                    extProcUDSPath,
-		MetricsRequestHeaderLabels: flags.metricsRequestHeaderLabels,
-		RootPrefix:                 flags.rootPrefix,
-		ExtProcExtraEnvVars:        flags.extProcExtraEnvVars,
-		ExtProcMaxRecvMsgSize:      flags.extProcMaxRecvMsgSize,
+		ExtProcImage:                   flags.extProcImage,
+		ExtProcImagePullPolicy:         flags.extProcImagePullPolicy,
+		ExtProcLogLevel:                flags.extProcLogLevel,
+		EnableLeaderElection:           flags.enableLeaderElection,
+		UDSPath:                        extProcUDSPath,
+		MetricsRequestHeaderAttributes: flags.metricsRequestHeaderAttributes,
+		TracingRequestHeaderAttributes: flags.spanRequestHeaderAttributes,
+		RootPrefix:                     flags.rootPrefix,
+		ExtProcExtraEnvVars:            flags.extProcExtraEnvVars,
+		ExtProcMaxRecvMsgSize:          flags.extProcMaxRecvMsgSize,
 	}); err != nil {
 		setupLog.Error(err, "failed to start controller")
 	}

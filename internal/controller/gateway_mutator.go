@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -23,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	aigv1a1 "github.com/envoyproxy/ai-gateway/api/v1alpha1"
+	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 )
 
 // gatewayMutator implements [admission.CustomDefaulter].
@@ -32,19 +34,25 @@ type gatewayMutator struct {
 	kube   kubernetes.Interface
 	logger logr.Logger
 
-	extProcImage               string
-	extProcImagePullPolicy     corev1.PullPolicy
-	extProcLogLevel            string
-	udsPath                    string
-	metricsRequestHeaderLabels string
-	rootPrefix                 string
-	extProcExtraEnvVars        []corev1.EnvVar
-	extProcMaxRecvMsgSize      int
+	extProcImage                   string
+	extProcImagePullPolicy         corev1.PullPolicy
+	extProcLogLevel                string
+	udsPath                        string
+	metricsRequestHeaderAttributes string
+	spanRequestHeaderAttributes    string
+	rootPrefix                     string
+	extProcExtraEnvVars            []corev1.EnvVar
+	extProcMaxRecvMsgSize          int
+
+	// Whether to run the extProc container as a sidecar (true) as a normal container (false).
+	// This is essentially a workaround for old k8s versions, and we can remove this in the future.
+	extProcAsSideCar bool
 }
 
 func newGatewayMutator(c client.Client, kube kubernetes.Interface, logger logr.Logger,
 	extProcImage string, extProcImagePullPolicy corev1.PullPolicy, extProcLogLevel,
-	udsPath, metricsRequestHeaderLabels, rootPrefix, extProcExtraEnvVars string, extProcMaxRecvMsgSize int,
+	udsPath, metricsRequestHeaderAttributes, spanRequestHeaderAttributes, rootPrefix, extProcExtraEnvVars string, extProcMaxRecvMsgSize int,
+	extProcAsSideCar bool,
 ) *gatewayMutator {
 	var parsedEnvVars []corev1.EnvVar
 	if extProcExtraEnvVars != "" {
@@ -57,16 +65,18 @@ func newGatewayMutator(c client.Client, kube kubernetes.Interface, logger logr.L
 	}
 	return &gatewayMutator{
 		c: c, codec: serializer.NewCodecFactory(Scheme),
-		kube:                       kube,
-		extProcImage:               extProcImage,
-		extProcImagePullPolicy:     extProcImagePullPolicy,
-		extProcLogLevel:            extProcLogLevel,
-		logger:                     logger,
-		udsPath:                    udsPath,
-		metricsRequestHeaderLabels: metricsRequestHeaderLabels,
-		rootPrefix:                 rootPrefix,
-		extProcExtraEnvVars:        parsedEnvVars,
-		extProcMaxRecvMsgSize:      extProcMaxRecvMsgSize,
+		kube:                           kube,
+		extProcImage:                   extProcImage,
+		extProcImagePullPolicy:         extProcImagePullPolicy,
+		extProcLogLevel:                extProcLogLevel,
+		logger:                         logger,
+		udsPath:                        udsPath,
+		metricsRequestHeaderAttributes: metricsRequestHeaderAttributes,
+		spanRequestHeaderAttributes:    spanRequestHeaderAttributes,
+		rootPrefix:                     rootPrefix,
+		extProcExtraEnvVars:            parsedEnvVars,
+		extProcMaxRecvMsgSize:          extProcMaxRecvMsgSize,
+		extProcAsSideCar:               extProcAsSideCar,
 	}
 }
 
@@ -90,7 +100,7 @@ func (g *gatewayMutator) Default(ctx context.Context, obj runtime.Object) error 
 }
 
 // buildExtProcArgs builds all command line arguments for the extproc container.
-func (g *gatewayMutator) buildExtProcArgs(filterConfigFullPath string, extProcAdminPort int) []string {
+func (g *gatewayMutator) buildExtProcArgs(filterConfigFullPath string, extProcAdminPort int, needMCP bool) []string {
 	args := []string{
 		"-configPath", filterConfigFullPath,
 		"-logLevel", g.extProcLogLevel,
@@ -99,10 +109,18 @@ func (g *gatewayMutator) buildExtProcArgs(filterConfigFullPath string, extProcAd
 		"-rootPrefix", g.rootPrefix,
 		"-maxRecvMsgSize", fmt.Sprintf("%d", g.extProcMaxRecvMsgSize),
 	}
+	if needMCP {
+		args = append(args, "-mcpAddr", ":"+strconv.Itoa(internalapi.MCPProxyPort))
+	}
 
 	// Add metrics header label mapping if configured.
-	if g.metricsRequestHeaderLabels != "" {
-		args = append(args, "-metricsRequestHeaderLabels", g.metricsRequestHeaderLabels)
+	if g.metricsRequestHeaderAttributes != "" {
+		args = append(args, "-metricsRequestHeaderAttributes", g.metricsRequestHeaderAttributes)
+	}
+
+	// Add tracing header attribute mapping if configured.
+	if g.spanRequestHeaderAttributes != "" {
+		args = append(args, "-spanRequestHeaderAttributes", g.spanRequestHeaderAttributes)
 	}
 
 	return args
@@ -157,10 +175,19 @@ func (g *gatewayMutator) mutatePod(ctx context.Context, pod *corev1.Pod, gateway
 	if err != nil {
 		return fmt.Errorf("failed to list routes: %w", err)
 	}
-	if len(routes.Items) == 0 {
-		g.logger.Info("no AIGatewayRoutes found for gateway", "name", gatewayName, "namespace", gatewayNamespace)
+
+	var mcpRoutes aigv1a1.MCPRouteList
+	err = g.c.List(ctx, &mcpRoutes, client.MatchingFields{
+		k8sClientIndexMCPRouteToAttachedGateway: fmt.Sprintf("%s.%s", gatewayName, gatewayNamespace),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list routes: %w", err)
+	}
+	if len(routes.Items) == 0 && len(mcpRoutes.Items) == 0 {
+		g.logger.Info("no AIGatewayRoutes or MCPRoutes found for gateway", "name", gatewayName, "namespace", gatewayNamespace)
 		return nil
 	}
+	g.logger.Info("found routes for gateway", "aigatewayroute_count", len(routes.Items), "mcpgatewayroute_count", len(mcpRoutes.Items))
 
 	podspec := &pod.Spec
 
@@ -212,7 +239,7 @@ func (g *gatewayMutator) mutatePod(ctx context.Context, pod *corev1.Pod, gateway
 		filterConfigFullPath  = filterConfigMountPath + "/" + FilterConfigKeyInSecret
 	)
 	udsMountPath := filepath.Dir(g.udsPath)
-	podspec.Containers = append(podspec.Containers, corev1.Container{
+	container := corev1.Container{
 		Name:            extProcContainerName,
 		Image:           g.extProcImage,
 		ImagePullPolicy: g.extProcImagePullPolicy,
@@ -221,7 +248,7 @@ func (g *gatewayMutator) mutatePod(ctx context.Context, pod *corev1.Pod, gateway
 			// TODO: This is for the backward compatibility with v0.3. Remove this after v0.4 is released.
 			{Name: "aigw-metrics", ContainerPort: extProcAdminPort},
 		},
-		Args: g.buildExtProcArgs(filterConfigFullPath, extProcAdminPort),
+		Args: g.buildExtProcArgs(filterConfigFullPath, extProcAdminPort, len(mcpRoutes.Items) > 0),
 		Env:  envVars,
 		VolumeMounts: []corev1.VolumeMount{
 			{
@@ -265,7 +292,15 @@ func (g *gatewayMutator) mutatePod(ctx context.Context, pod *corev1.Pod, gateway
 			FailureThreshold:    1,
 		},
 		Resources: resources,
-	})
+	}
+
+	if g.extProcAsSideCar {
+		// When running as a sidecar, we want to ensure the extProc container is shutdown last after Envoy is shutdown.
+		container.RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+		podspec.InitContainers = append(podspec.InitContainers, container)
+	} else {
+		podspec.Containers = append(podspec.Containers, container)
+	}
 
 	// Lastly, we need to mount the Envoy container with the extproc socket.
 	for i := range podspec.Containers {
